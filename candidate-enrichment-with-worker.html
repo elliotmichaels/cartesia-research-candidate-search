@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Candidate Profile Enrichment</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-purple-900 via-indigo-900 to-purple-900 min-h-screen p-6">
+    <div class="max-w-6xl mx-auto">
+        <div class="bg-white rounded-xl shadow-2xl overflow-hidden">
+            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 p-6 text-white">
+                <div class="flex items-center gap-3">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                    <div>
+                        <h1 class="text-2xl font-bold">Candidate Profile Enrichment</h1>
+                        <p class="text-purple-100 text-sm">Powered by Cloudflare Workers - No CORS Issues! ✨</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-6 border-b bg-slate-50">
+                <h2 class="text-lg font-semibold mb-4">Step 1: API Configuration</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Airtable API Key</label>
+                        <input type="password" id="airtableKey" placeholder="patXXXXXXXXXXXXXX" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Airtable Base ID</label>
+                        <input type="text" id="airtableBase" placeholder="appXXXXXXXXXXXXXX" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">SerpAPI Key</label>
+                        <input type="password" id="serpapiKey" placeholder="For web search" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Apollo.io API Key</label>
+                        <input type="password" id="apolloKey" placeholder="For email finding" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500">
+                    </div>
+                </div>
+
+                <button onclick="connect()" class="w-full bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold py-3 rounded-lg shadow-lg transition-all">
+                    Connect to Airtable
+                </button>
+            </div>
+
+            <div id="candidateSection" class="p-6 border-b hidden">
+                <h2 class="text-lg font-semibold mb-4">Step 2: Select Candidate</h2>
+                <select id="candidateSelect" class="w-full px-3 py-2 border rounded-lg mb-4 focus:ring-2 focus:ring-purple-500">
+                    <option value="">Loading candidates...</option>
+                </select>
+                <button onclick="startEnrichment()" id="enrichBtn" class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-semibold py-4 rounded-lg shadow-lg transition-all">
+                    🔍 Enrich Profile
+                </button>
+            </div>
+
+            <div id="logsSection" class="p-6 bg-slate-50 hidden">
+                <h3 class="font-semibold mb-3">Activity Log</h3>
+                <div id="logsList" class="bg-white rounded-lg border max-h-96 overflow-y-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Your Cloudflare Worker URL (pre-configured)
+        const WORKER_URL = 'https://candidate-enrichment-proxy-royal-water-422f.elliot-michaels.workers.dev';
+        
+        let candidates = [];
+        let mapping = {};
+
+        function log(msg, type) {
+            type = type || 'info';
+            const logsSection = document.getElementById('logsSection');
+            const logsList = document.getElementById('logsList');
+            logsSection.classList.remove('hidden');
+            
+            const colorClass = type === 'error' ? 'text-red-600' : 
+                               type === 'success' ? 'text-green-600' : 
+                               type === 'warning' ? 'text-yellow-600' : 'text-gray-700';
+            
+            const div = document.createElement('div');
+            div.className = 'px-4 py-2 border-b text-sm flex items-start gap-2';
+            div.innerHTML = '<span class="text-gray-400 text-xs mt-0.5">' + new Date().toLocaleTimeString() + '</span><span class="' + colorClass + ' flex-1">' + msg + '</span>';
+            logsList.appendChild(div);
+            logsList.scrollTop = logsList.scrollHeight;
+        }
+
+        async function connect() {
+            const key = document.getElementById('airtableKey').value.trim();
+            const base = document.getElementById('airtableBase').value.trim();
+            
+            if (!key || !base) {
+                alert('Please enter Airtable API key and Base ID');
+                return;
+            }
+            
+            try {
+                log('Connecting to Airtable via Cloudflare Worker...', 'info');
+                
+                const res = await fetch(WORKER_URL + '/airtable/meta/bases/' + base + '/tables', {
+                    headers: { 'Authorization': 'Bearer ' + key }
+                });
+
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+
+                const data = await res.json();
+                
+                const cTable = data.tables.find(function(t) { return t.name === 'Candidates'; });
+                const aTable = data.tables.find(function(t) { return t.name === 'Affiliations'; });
+                const coTable = data.tables.find(function(t) { return t.name === 'Companies'; });
+                
+                if (!cTable) throw new Error('Candidates table not found');
+                
+                const candidatesFields = cTable.fields;
+                
+                mapping.candidateName = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('name'); });
+                if (!mapping.candidateName) mapping.candidateName = candidatesFields[0].name;
+                else mapping.candidateName = mapping.candidateName.name;
+                
+                mapping.email = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('email'); });
+                if (mapping.email) mapping.email = mapping.email.name;
+                
+                mapping.scholar = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('scholar'); });
+                if (mapping.scholar) mapping.scholar = mapping.scholar.name;
+                
+                mapping.linkedin = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('linkedin'); });
+                if (mapping.linkedin) mapping.linkedin = mapping.linkedin.name;
+                
+                mapping.affiliation = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('affiliation'); });
+                if (mapping.affiliation) mapping.affiliation = mapping.affiliation.name;
+                
+                mapping.company = candidatesFields.find(function(f) { return f.name.toLowerCase().includes('company'); });
+                if (mapping.company) mapping.company = mapping.company.name;
+                
+                if (aTable) {
+                    mapping.affiliationName = aTable.fields.find(function(f) { return f.name.toLowerCase().includes('name'); });
+                    if (!mapping.affiliationName) mapping.affiliationName = aTable.fields[0].name;
+                    else mapping.affiliationName = mapping.affiliationName.name;
+                }
+                
+                if (coTable) {
+                    mapping.companyName = coTable.fields.find(function(f) { return f.name.toLowerCase().includes('name'); });
+                    if (!mapping.companyName) mapping.companyName = coTable.fields[0].name;
+                    else mapping.companyName = mapping.companyName.name;
+                }
+                
+                log('✓ Connected successfully!', 'success');
+                await loadCandidates(key, base);
+                document.getElementById('candidateSection').classList.remove('hidden');
+            } catch (e) {
+                log('Connection error: ' + e.message, 'error');
+            }
+        }
+
+        async function loadCandidates(key, base) {
+            try {
+                log('Loading candidates...', 'info');
+                
+                let allRecords = [];
+                let offset = null;
+
+                do {
+                    const url = offset 
+                        ? WORKER_URL + '/airtable/' + base + '/Candidates?offset=' + offset
+                        : WORKER_URL + '/airtable/' + base + '/Candidates';
+                    
+                    const response = await fetch(url, {
+                        headers: { 'Authorization': 'Bearer ' + key }
+                    });
+
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    const data = await response.json();
+                    allRecords = allRecords.concat(data.records);
+                    offset = data.offset;
+                } while (offset);
+
+                candidates = allRecords;
+                log('✓ Loaded ' + candidates.length + ' candidates', 'success');
+                
+                const select = document.getElementById('candidateSelect');
+                select.innerHTML = '<option value="">Select a candidate...</option>' +
+                    candidates.map(function(c) {
+                        return '<option value="' + c.id + '">' + (c.fields[mapping.candidateName] || 'Unnamed') + '</option>';
+                    }).join('');
+                
+            } catch (error) {
+                log('Error loading candidates: ' + error.message, 'error');
+            }
+        }
+
+        async function startEnrichment() {
+            const candidateId = document.getElementById('candidateSelect').value;
+            if (!candidateId) {
+                alert('Please select a candidate');
+                return;
+            }
+            
+            document.getElementById('logsList').innerHTML = '';
+            const candidate = candidates.find(function(c) { return c.id === candidateId; });
+            await enrichCandidate(candidate);
+        }
+
+        async function enrichCandidate(candidate) {
+            const name = candidate.fields[mapping.candidateName];
+            log('━━━ Enriching: ' + name + ' ━━━', 'info');
+            
+            const enrichedData = {};
+
+            // Check if abbreviated name
+            const isAbbreviated = /^[A-Z]\.\s/.test(name);
+            if (isAbbreviated) {
+                log('  → Detected abbreviated name, searching for full name...', 'info');
+                enrichedData.fullName = await findFullName(name);
+            }
+
+            enrichedData.scholar = await findScholarProfile(enrichedData.fullName || name);
+            const webInfo = await searchWebInfo(enrichedData.fullName || name);
+            enrichedData.affiliation = webInfo.affiliation;
+            enrichedData.company = webInfo.company;
+            enrichedData.linkedin = webInfo.linkedin;
+            enrichedData.email = await findEmail(enrichedData.fullName || name, enrichedData.affiliation);
+            
+            await updateCandidateRecord(candidate.id, enrichedData);
+        }
+
+        async function findFullName(abbreviatedName) {
+            const serpapiKey = document.getElementById('serpapiKey').value.trim();
+            if (!serpapiKey) return null;
+            
+            try {
+                const response = await fetch(WORKER_URL + '/serpapi/search?q=' + encodeURIComponent(abbreviatedName + ' researcher author') + '&api_key=' + serpapiKey);
+                
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                
+                const data = await response.json();
+                const results = data.organic_results || [];
+                
+                const lastNameMatch = abbreviatedName.match(/[A-Z]\.\s+([A-Z][a-z]+)/);
+                if (!lastNameMatch) return null;
+                const lastName = lastNameMatch[1];
+                
+                for (let i = 0; i < Math.min(results.length, 3); i++) {
+                    const result = results[i];
+                    const text = result.title + ' ' + result.snippet;
+                    const fullNamePattern = new RegExp('\\b([A-Z][a-z]+)\\s+' + lastName + '\\b');
+                    const match = text.match(fullNamePattern);
+                    
+                    if (match) {
+                        const fullName = match[0];
+                        log('  ✓ Found full name: ' + fullName, 'success');
+                        return fullName;
+                    }
+                }
+                
+                const scholarResponse = await fetch(WORKER_URL + '/serpapi/scholar?mauthors=' + encodeURIComponent(abbreviatedName) + '&api_key=' + serpapiKey);
+                
+                if (scholarResponse.ok) {
+                    const scholarData = await scholarResponse.json();
+                    if (scholarData.profiles && scholarData.profiles[0]) {
+                        const profileName = scholarData.profiles[0].name;
+                        if (profileName && !/^[A-Z]\.\s/.test(profileName)) {
+                            log('  ✓ Found full name from Scholar: ' + profileName, 'success');
+                            return profileName;
+                        }
+                    }
+                }
+                
+                return null;
+            } catch (error) {
+                log('  ✗ Full name search error: ' + error.message, 'error');
+                return null;
+            }
+        }
+
+        async function findScholarProfile(name) {
+            const serpapiKey = document.getElementById('serpapiKey').value.trim();
+            if (!serpapiKey) {
+                log('  ⊘ Skipping Scholar search (no API key)', 'warning');
+                return null;
+            }
+            
+            try {
+                log('  → Searching Google Scholar...', 'info');
+                const response = await fetch(WORKER_URL + '/serpapi/scholar?mauthors=' + encodeURIComponent(name) + '&api_key=' + serpapiKey);
+                
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                
+                const data = await response.json();
+                if (data.profiles && data.profiles.length > 0) {
+                    const profile = data.profiles[0];
+                    const scholarUrl = 'https://scholar.google.com/citations?user=' + profile.author_id;
+                    log('  ✓ Found Scholar profile', 'success');
+                    return scholarUrl;
+                }
+                
+                log('  ⊘ No Scholar profile found', 'warning');
+                return null;
+            } catch (error) {
+                log('  ✗ Scholar search error: ' + error.message, 'error');
+                return null;
+            }
+        }
+
+        async function searchWebInfo(name) {
+            const serpapiKey = document.getElementById('serpapiKey').value.trim();
+            if (!serpapiKey) {
+                return { affiliation: null, company: null, linkedin: null };
+            }
+            
+            try {
+                log('  → Searching web for additional info...', 'info');
+                const response = await fetch(WORKER_URL + '/serpapi/search?q=' + encodeURIComponent(name + ' PhD researcher') + '&api_key=' + serpapiKey);
+                
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                
+                const data = await response.json();
+                const results = data.organic_results || [];
+                
+                let affiliation = null;
+                let company = null;
+                let linkedin = null;
+                
+                for (let i = 0; i < Math.min(results.length, 5); i++) {
+                    const result = results[i];
+                    const text = (result.title + ' ' + result.snippet).toLowerCase();
+                    
+                    if (result.link && result.link.includes('linkedin.com') && !linkedin) {
+                        linkedin = result.link;
+                        log('  ✓ Found LinkedIn profile', 'success');
+                    }
+                    
+                    const universities = ['university', 'institute', 'college', 'MIT', 'Stanford', 'Berkeley', 'CMU'];
+                    for (let j = 0; j < universities.length; j++) {
+                        if (text.includes(universities[j].toLowerCase()) && !affiliation) {
+                            const match = text.match(new RegExp('([A-Z][a-z]+ )*(' + universities[j] + ')( [A-Z][a-z]+)*', 'i'));
+                            if (match) {
+                                affiliation = match[0];
+                                log('  ✓ Found potential affiliation: ' + affiliation, 'success');
+                                break;
+                            }
+                        }
+                    }
+                    
+                    const companies = ['Google', 'Microsoft', 'Meta', 'OpenAI', 'Anthropic', 'DeepMind', 'Amazon', 'Apple'];
+                    for (let k = 0; k < companies.length; k++) {
+                        if (text.includes(companies[k].toLowerCase()) && !company) {
+                            company = companies[k];
+                            log('  ✓ Found potential company: ' + company, 'success');
+                            break;
+                        }
+                    }
+                }
+                
+                return { affiliation: affiliation, company: company, linkedin: linkedin };
+            } catch (error) {
+                log('  ✗ Web search error: ' + error.message, 'error');
+                return { affiliation: null, company: null, linkedin: null };
+            }
+        }
+
+        async function findEmail(name, affiliation) {
+            const apolloKey = document.getElementById('apolloKey').value.trim();
+            if (!apolloKey) {
+                log('  ⊘ Skipping email search (no Apollo API key)', 'warning');
+                return null;
+            }
+            
+            try {
+                log('  → Searching for email via Apollo.io...', 'info');
+                
+                const response = await fetch(WORKER_URL + '/apollo/match', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Api-Key': apolloKey
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        organization_name: affiliation
+                    })
+                });
+                
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                
+                const data = await response.json();
+                if (data.person && data.person.email) {
+                    log('  ✓ Found email address', 'success');
+                    return data.person.email;
+                }
+                
+                log('  ⊘ No email found', 'warning');
+                return null;
+            } catch (error) {
+                log('  ✗ Email search error: ' + error.message, 'error');
+                return null;
+            }
+        }
+
+        async function getOrCreateAffiliation(affiliationName, apiKey, baseId) {
+            if (!affiliationName || !mapping.affiliationName) return null;
+            
+            try {
+                log('    → Searching Affiliations table...', 'info');
+                const searchUrl = WORKER_URL + '/airtable/' + baseId + '/Affiliations?filterByFormula=' + 
+                    encodeURIComponent('{' + mapping.affiliationName + '} = "' + affiliationName + '"');
+                const searchResponse = await fetch(searchUrl, {
+                    headers: { 'Authorization': 'Bearer ' + apiKey }
+                });
+
+                if (searchResponse.ok) {
+                    const searchData = await searchResponse.json();
+                    if (searchData.records.length > 0) {
+                        log('    → ✓ Found existing affiliation record', 'success');
+                        return searchData.records[0].id;
+                    }
+                }
+
+                log('    → Creating new affiliation record...', 'info');
+                const createBody = {};
+                createBody[mapping.affiliationName] = affiliationName;
+                
+                const createResponse = await fetch(WORKER_URL + '/airtable/' + baseId + '/Affiliations', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + apiKey,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ fields: createBody })
+                });
+
+                if (createResponse.ok) {
+                    const createData = await createResponse.json();
+                    log('    → ✓ Created new affiliation', 'success');
+                    return createData.id;
+                }
+            } catch (error) {
+                log('    → ✗ Exception: ' + error.message, 'error');
+            }
+            return null;
+        }
+
+        async function getOrCreateCompany(companyName, apiKey, baseId) {
+            if (!companyName || !mapping.companyName) return null;
+            
+            try {
+                log('    → Searching Companies table...', 'info');
+                const searchUrl = WORKER_URL + '/airtable/' + baseId + '/Companies?filterByFormula=' + 
+                    encodeURIComponent('{' + mapping.companyName + '} = "' + companyName + '"');
+                const searchResponse = await fetch(searchUrl, {
+                    headers: { 'Authorization': 'Bearer ' + apiKey }
+                });
+
+                if (searchResponse.ok) {
+                    const searchData = await searchResponse.json();
+                    if (searchData.records.length > 0) {
+                        log('    → ✓ Found existing company record', 'success');
+                        return searchData.records[0].id;
+                    }
+                }
+
+                log('    → Creating new company record...', 'info');
+                const createBody = {};
+                createBody[mapping.companyName] = companyName;
+                
+                const createResponse = await fetch(WORKER_URL + '/airtable/' + baseId + '/Companies', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + apiKey,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ fields: createBody })
+                });
+
+                if (createResponse.ok) {
+                    const createData = await createResponse.json();
+                    log('    → ✓ Created new company', 'success');
+                    return createData.id;
+                }
+            } catch (error) {
+                log('    → ✗ Exception: ' + error.message, 'error');
+            }
+            return null;
+        }
+
+        async function updateCandidateRecord(candidateId, enrichedData) {
+            const apiKey = document.getElementById('airtableKey').value.trim();
+            const baseId = document.getElementById('airtableBase').value.trim();
+            
+            try {
+                const fields = {};
+                
+                if (enrichedData.fullName && mapping.candidateName) {
+                    fields[mapping.candidateName] = enrichedData.fullName;
+                    log('  ✓ Will update to full name: ' + enrichedData.fullName, 'success');
+                }
+                
+                if (enrichedData.email && mapping.email) {
+                    fields[mapping.email] = enrichedData.email;
+                }
+                if (enrichedData.scholar && mapping.scholar) {
+                    fields[mapping.scholar] = enrichedData.scholar;
+                }
+                if (enrichedData.linkedin && mapping.linkedin) {
+                    fields[mapping.linkedin] = enrichedData.linkedin;
+                }
+                
+                if (enrichedData.affiliation && mapping.affiliation) {
+                    log('  → Processing affiliation linking...', 'info');
+                    const affiliationId = await getOrCreateAffiliation(enrichedData.affiliation, apiKey, baseId);
+                    if (affiliationId) {
+                        fields[mapping.affiliation] = [affiliationId];
+                        log('  ✓ Affiliation linked successfully', 'success');
+                    }
+                }
+                
+                if (enrichedData.company && mapping.company) {
+                    log('  → Processing company linking...', 'info');
+                    const companyId = await getOrCreateCompany(enrichedData.company, apiKey, baseId);
+                    if (companyId) {
+                        fields[mapping.company] = [companyId];
+                        log('  ✓ Company linked successfully', 'success');
+                    }
+                }
+                
+                if (Object.keys(fields).length === 0) {
+                    log('  ⊘ No new data to update', 'warning');
+                    return;
+                }
+                
+                log('  → Updating candidate record with ' + Object.keys(fields).length + ' fields...', 'info');
+                
+                const response = await fetch(WORKER_URL + '/airtable/' + baseId + '/Candidates/' + candidateId, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': 'Bearer ' + apiKey,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ fields: fields })
+                });
+                
+                if (response.ok) {
+                    log('  ✓ Candidate profile updated successfully!', 'success');
+                } else {
+                    const error = await response.json();
+                    log('  ✗ Update failed: ' + error.error.message, 'error');
+                }
+                
+            } catch (error) {
+                log('  ✗ Update error: ' + error.message, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
